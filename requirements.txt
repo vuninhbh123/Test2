@@ -1,22 +1,22 @@
-# requirements.txt
+# requirements.txt cho ứng dụng Đánh giá Phương án Kinh doanh
 
 # Thư viện chính cho giao diện web
 streamlit
 
-# Thư viện xử lý dữ liệu và bảng
+# Thư viện xử lý dữ liệu (bắt buộc)
 pandas
 
-# Thư viện cần thiết cho các phép tính toán tài chính (NPV, IRR)
+# Thư viện cho tính toán tài chính (đặc biệt là NPV, IRR)
 numpy
 
-# Thư viện SDK chính thức để giao tiếp với Gemini API
+# Thư viện cho chức năng AI (sử dụng Gemini API)
 google-genai
 
-# Thư viện cần thiết để đọc nội dung từ file Word (.docx)
+# Thư viện cần thiết để xử lý file Word (.docx)
 python-docx
 
-# ******************************
-# openpyxl và tabulate KHÔNG CẦN THIẾT nữa:
-# - openpyxl: Dùng để đọc Excel, nhưng ứng dụng đã chuyển sang đọc Word.
-# - tabulate: Không cần thiết vì pandas đã tự xử lý to_markdown() tốt.
-# ******************************
+# Thư viện cho xử lý file Excel (nếu cần cho các chức năng khác sau này)
+openpyxl 
+
+# tabulate (giữ lại vì có thể hữu ích cho to_markdown() trong một số môi trường)
+tabulate
