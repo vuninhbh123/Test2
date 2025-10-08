@@ -4,8 +4,9 @@ import streamlit as st
 import pandas as pd
 from google import genai
 from google.genai.errors import APIError
-import docx # Thư viện để đọc file .docx
-import numpy as np # Dùng cho tính toán NPV/IRR
+import docx
+import numpy as np
+import json # Thư viện cần thiết cho json.loads()
 
 # --- Cấu hình Trang Streamlit ---
 st.set_page_config(
@@ -22,9 +23,9 @@ try:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 except KeyError:
     GEMINI_API_KEY = None
-    st.error("Lỗi: Không tìm thấy Khóa API 'GEMINI_API_KEY'. Vui lòng cấu hình trong Streamlit Secrets.")
+    # st.error("Lỗi: Không tìm thấy Khóa API 'GEMINI_API_KEY'. Vui lòng cấu hình trong Streamlit Secrets.")
 
-# --- HÀM HỖ TRỢ ĐỌC FILE WORD ---
+# --- HÀM HỖ TRỢ ĐỌC FILE WORD (Giữ nguyên) ---
 def read_docx(file):
     """Đọc toàn bộ nội dung văn bản từ file docx đã tải lên."""
     try:
@@ -37,7 +38,7 @@ def read_docx(file):
         st.error(f"Lỗi đọc file Word: {e}")
         return None
 
-# --- HÀM GỌI API GEMINI ĐỂ LỌC DỮ LIỆU (Yêu cầu 1) ---
+# --- HÀM GỌI API GEMINI ĐỂ LỌC DỮ LIỆU (ĐÃ CHỈNH SỬA LỖI JSON) ---
 @st.cache_data(show_spinner=False)
 def extract_financial_data_with_ai(project_text, api_key):
     """
@@ -55,7 +56,7 @@ def extract_financial_data_with_ai(project_text, api_key):
         Nếu không tìm thấy, hãy điền 'N/A' (Lưu ý: WACC, Thuế thường là %; các mục còn lại là giá trị tiền tệ).
         **Thời gian của dự án (Dòng đời dự án)** phải được thể hiện bằng số năm nguyên.
         
-        Xuất ra kết quả dưới dạng một đối tượng JSON duy nhất (không có chú thích, không có văn bản giải thích).
+        **QUAN TRỌNG: Chỉ trả lời bằng đối tượng JSON thuần túy, không có bất kỳ văn bản, giải thích, hay ký tự nào khác bên ngoài khối JSON. KHÔNG SỬ DỤNG ```JSON HOẶC ```.**
 
         Văn bản dự án:
         ---
@@ -78,60 +79,66 @@ def extract_financial_data_with_ai(project_text, api_key):
             contents=prompt
         )
         
-        # Cố gắng chuyển đổi chuỗi phản hồi JSON sang dict Python
-        import json
-        return json.loads(response.text.strip())
+        # --- BẮT ĐẦU PHẦN XỬ LÝ HẬU KỲ ĐỂ KHẮC PHỤC LỖI JSON ---
+        json_string = response.text.strip()
+        
+        # 1. Loại bỏ các khối markdown thừa (ví dụ: ```json...``` hoặc ```...)
+        if json_string.startswith("```json"):
+            json_string = json_string[7:].strip()
+        elif json_string.startswith("```"): # Trường hợp không có 'json'
+            json_string = json_string[3:].strip()
+            
+        if json_string.endswith("```"):
+            json_string = json_string[:-3].strip()
+        
+        # 2. Xử lý trường hợp AI trả về text không phải JSON (rất hiếm khi xảy ra nếu prompt tốt)
+        if not json_string.startswith("{") or not json_string.endswith("}"):
+            raise json.JSONDecodeError("Phản hồi không phải là cấu trúc JSON", json_string, 0)
+            
+        # 3. Cố gắng chuyển đổi chuỗi JSON đã được dọn dẹp sang dict Python
+        return json.loads(json_string)
 
     except APIError as e:
         st.error(f"Lỗi gọi Gemini API: Vui lòng kiểm tra Khóa API hoặc giới hạn sử dụng. Chi tiết lỗi: {e}")
         return None
-    except json.JSONDecodeError:
-        st.error("Lỗi: AI không trả về định dạng JSON hợp lệ. Vui lòng thử lại với tài liệu rõ ràng hơn.")
+    except json.JSONDecodeError as jde:
+        st.error(f"Lỗi: AI không trả về định dạng JSON hợp lệ. Vui lòng thử lại với tài liệu rõ ràng hơn.")
+        st.markdown("**Phản hồi thô của AI để kiểm tra:**")
+        st.code(response.text) # Hiển thị phản hồi thô để dễ dàng debug
         return None
     except Exception as e:
         st.error(f"Đã xảy ra lỗi không xác định trong quá trình AI lọc dữ liệu: {e}")
         return None
-
-# --- HÀM TÍNH TOÁN DÒNG TIỀN VÀ CHỈ SỐ (Yêu cầu 2 & 3) ---
+        
+# --- HÀM TÍNH TOÁN DÒNG TIỀN VÀ CHỈ SỐ (Giữ nguyên) ---
 def calculate_project_metrics(data):
     """Xây dựng bảng dòng tiền và tính toán NPV, IRR, PP, DPP."""
     
     # 1. Trích xuất thông số
     try:
-        investment = float(data.get("Vốn đầu tư ban đầu (Initial Investment)", 0))
-        life = int(data.get("Dòng đời dự án (Project Life - năm)", 0))
-        revenue = float(data.get("Doanh thu hàng năm (Annual Revenue)", 0))
-        cost = float(data.get("Chi phí hoạt động hàng năm (Annual Operating Cost)", 0))
-        wacc = float(data.get("WACC (Weighted Average Cost of Capital - %)**", 0)) / 100.0
-        tax_rate = float(data.get("Thuế suất (Tax Rate - %)**", 0)) / 100.0
+        # Xử lý các giá trị N/A nếu AI không tìm thấy
+        investment = float(data.get("Vốn đầu tư ban đầu (Initial Investment)", 0) if data.get("Vốn đầu tư ban đầu (Initial Investment)") != 'N/A' else 0)
+        life = int(data.get("Dòng đời dự án (Project Life - năm)", 0) if data.get("Dòng đời dự án (Project Life - năm)") != 'N/A' else 0)
+        revenue = float(data.get("Doanh thu hàng năm (Annual Revenue)", 0) if data.get("Doanh thu hàng năm (Annual Revenue)") != 'N/A' else 0)
+        cost = float(data.get("Chi phí hoạt động hàng năm (Annual Operating Cost)", 0) if data.get("Chi phí hoạt động hàng năm (Annual Operating Cost)") != 'N/A' else 0)
+        wacc = float(data.get("WACC (Weighted Average Cost of Capital - %)**", 0) if data.get("WACC (Weighted Average Cost of Capital - %)**") != 'N/A' else 0) / 100.0
+        tax_rate = float(data.get("Thuế suất (Tax Rate - %)**", 0) if data.get("Thuế suất (Tax Rate - %)**") != 'N/A' else 0) / 100.0
     except ValueError:
         st.error("Lỗi: Các thông số tài chính cần phải là số. Vui lòng kiểm tra dữ liệu AI đã lọc.")
         return None, None
         
     if life <= 0 or wacc <= 0 or investment <= 0:
-        st.warning("Dòng đời dự án, WACC hoặc Vốn đầu tư phải lớn hơn 0 để tính toán.")
+        st.warning("Dòng đời dự án, WACC hoặc Vốn đầu tư phải lớn hơn 0 để tính toán. Vui lòng kiểm tra lại dữ liệu đã lọc.")
         return None, None
 
     # 2. Xây dựng Bảng Dòng Tiền (Cash Flow - CF)
     
-    # Giả định đơn giản: Không có Khấu hao, Vốn lưu động, Giá trị thanh lý.
-    # Lợi nhuận trước Thuế và Lãi vay (EBIT) = Doanh thu - Chi phí
     ebit = revenue - cost 
-    
-    # Thuế phải nộp
     tax_paid = ebit * tax_rate if ebit > 0 else 0
-    
-    # Lợi nhuận sau thuế (Net Income) = EBIT - Thuế
     net_income = ebit - tax_paid
-    
-    # Dòng tiền thuần (Net Cash Flow) = Net Income + Khấu hao (giả định Khấu hao = 0)
-    # Vì không có Khấu hao nên Net Cash Flow = Net Income
     cf_t = net_income 
     
-    # Tạo DataFrame
     years = [0] + list(range(1, life + 1))
-    
-    # Dòng tiền ban đầu: -Vốn đầu tư
     cash_flows = [-investment] + [cf_t] * life
     
     df_cf = pd.DataFrame({
@@ -143,24 +150,21 @@ def calculate_project_metrics(data):
     # 3. Tính toán các chỉ số hiệu quả dự án
     
     # NPV (Net Present Value)
-    # np.npv (rate, values) - Dòng tiền từ năm 0 trở đi
     npv = np.npv(wacc, cash_flows) 
     
     # IRR (Internal Rate of Return)
-    # np.irr (values) - Dòng tiền từ năm 0 trở đi
     try:
         irr = np.irr(cash_flows)
     except Exception:
-        irr = np.nan # Có thể không tính được IRR nếu CF không đổi dấu
+        irr = np.nan 
 
     # PP (Payback Period - Thời gian hoàn vốn)
     cumulative_cf = np.cumsum(cash_flows)
     payback_year = next((i for i, cf in enumerate(cumulative_cf) if cf >= 0), life)
     
     if payback_year <= life and payback_year > 0:
-        # Tính chi tiết: Năm hoàn vốn - 1 + (Vốn còn thiếu cuối năm T-1 / CF năm T)
-        prev_cf = cumulative_cf[payback_year - 1] # Giá trị âm
-        current_cf = cash_flows[payback_year] # Giá trị dương (dòng tiền năm đó)
+        prev_cf = cumulative_cf[payback_year - 1]
+        current_cf = cash_flows[payback_year]
         pp = (payback_year - 1) + (-prev_cf / current_cf)
     elif payback_year == 0:
         pp = 0
@@ -183,6 +187,7 @@ def calculate_project_metrics(data):
         dpp = 'Không hoàn vốn'
 
     metrics = {
+        "WACC": f"{wacc*100:.2f}%",
         "NPV (Giá trị hiện tại ròng)": f"{npv:,.0f}",
         "IRR (Tỷ suất hoàn vốn nội tại)": f"{irr*100:.2f}%" if not np.isnan(irr) else "Không xác định",
         "PP (Thời gian hoàn vốn)": f"{pp:.2f} năm" if isinstance(pp, float) else pp,
@@ -191,7 +196,7 @@ def calculate_project_metrics(data):
 
     return df_cf, metrics
 
-# --- HÀM PHÂN TÍCH CHỈ SỐ BẰNG AI (Yêu cầu 4) ---
+# --- HÀM PHÂN TÍCH CHỈ SỐ BẰNG AI (Giữ nguyên) ---
 def analyze_project_with_ai(metrics, api_key):
     """Gửi các chỉ số đánh giá dự án đến Gemini API và nhận nhận xét."""
     if not api_key:
@@ -201,7 +206,6 @@ def analyze_project_with_ai(metrics, api_key):
         client = genai.Client(api_key=api_key)
         model_name = 'gemini-2.5-flash'  
 
-        # Chuyển metrics thành chuỗi markdown để AI dễ đọc
         metrics_markdown = pd.Series(metrics).to_markdown(numalign="left", stralign="left")
 
         prompt = f"""
@@ -227,7 +231,7 @@ def analyze_project_with_ai(metrics, api_key):
         return f"Đã xảy ra lỗi không xác định trong quá trình AI phân tích: {e}"
 
 # =========================================================================
-# --- LUỒNG ỨNG DỤNG STREAMLIT ---
+# --- LUỒNG ỨNG DỤNG STREAMLIT (Giữ nguyên) ---
 # =========================================================================
 
 # 1. Tải File Word
@@ -244,26 +248,29 @@ if uploaded_file is not None and GEMINI_API_KEY:
     if project_text_content:
         # Nút bấm để thực hiện tạo tác lọc dữ liệu (Yêu cầu 1)
         if st.button("▶️ 1. Lọc Thông tin Tài chính bằng AI"):
+            # Xóa session cũ để chạy lại cache_data
+            if 'financial_data' in st.session_state:
+                del st.session_state['financial_data']
+            
             with st.spinner('Đang gửi văn bản và chờ AI trích xuất thông số...'):
                 financial_data = extract_financial_data_with_ai(project_text_content, GEMINI_API_KEY)
                 
                 if financial_data:
                     st.session_state['financial_data'] = financial_data
-                    st.success("AI đã trích xuất dữ liệu thành công!")
+                    st.session_state['financial_data_edited'] = financial_data # Khởi tạo dữ liệu chỉnh sửa
+                    st.success("AI đã trích xuất dữ liệu thành công! Vui lòng kiểm tra và chỉnh sửa.")
 
         # Hiển thị và chỉnh sửa dữ liệu đã lọc
-        if 'financial_data' in st.session_state:
+        if 'financial_data_edited' in st.session_state:
             st.subheader("2. Thông số Tài chính Đã Lọc (Có thể chỉnh sửa)")
             
-            # Sử dụng st.data_editor để người dùng có thể điều chỉnh
             # Chuyển đổi dict sang DataFrame để hiển thị và chỉnh sửa
-            df_filtered = pd.DataFrame(st.session_state['financial_data'].items(), 
+            df_filtered = pd.DataFrame(st.session_state['financial_data_edited'].items(), 
                                       columns=['Chỉ tiêu', 'Giá trị'])
             
-            # Đặt index là 'Chỉ tiêu' để dễ chỉnh sửa 'Giá trị'
             df_edited = st.data_editor(
                 df_filtered.set_index('Chỉ tiêu'),
-                column_config={"Giá trị": st.column_config.NumberColumn("Giá trị", format="%0.4f")},
+                column_config={"Giá trị": st.column_config.TextColumn("Giá trị", help="Nhập giá trị số (ví dụ: 10000000) hoặc N/A")},
                 use_container_width=True
             )
             
@@ -294,8 +301,7 @@ if uploaded_file is not None and GEMINI_API_KEY:
                 # Hiển thị Chỉ số Đánh giá (Yêu cầu 3)
                 st.subheader("4. Các Chỉ số Đánh giá Hiệu quả Dự án")
                 
-                # Dùng cột để hiển thị các chỉ số
-                cols = st.columns(4)
+                cols = st.columns(5) # 5 cột cho 5 chỉ số (Thêm WACC)
                 for i, (key, value) in enumerate(st.session_state['metrics'].items()):
                     cols[i].metric(key, value)
                 
@@ -311,6 +317,6 @@ if uploaded_file is not None and GEMINI_API_KEY:
 
 else:
     if not GEMINI_API_KEY:
-         st.warning("Vui lòng cấu hình Khóa API 'GEMINI_API_KEY' để sử dụng chức năng AI.")
+         st.warning("Vui lòng cấu hình Khóa API 'GEMINI_API_KEY' trong Streamlit Secrets để sử dụng chức năng AI.")
     else:
         st.info("Vui lòng tải lên file Word để bắt đầu đánh giá phương án kinh doanh.")
